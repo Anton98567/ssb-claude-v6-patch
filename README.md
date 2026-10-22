@@ -1,22 +1,22 @@
 # ssb-claude-v6-patch — Claude и Anthropic через IPv6 для Secret-Sing-Box
 
 Патч-скрипт для серверов [Secret-Sing-Box (ssb)](https://github.com/A-Zuro/Secret-Sing-Box):
-направляет трафик **Anthropic / Claude** через **глобальный IPv6** сервера.
+направляет трафик **Claude / Anthropic** через **глобальный IPv6** сервера.
 
 Аналог решения для Xray / 3X-UI (outbound `freedom` + `sendThrough` + routing rule)
-из статьи «Claude — решение для РФ через ipv6» (checkvpn.net), адаптированный под
+из статьи «Gemini — решение для РФ через ipv6» (checkvpn.net), адаптированный под
 sing-box 1.12+ и конфиги, которые генерирует ssb.
 
 ## Зачем это нужно
 
-Сервисы Anthropic (в том числе Claude) могут блокироваться, отвечать капчей или
-отказывать при выходе с IPv4 адресов дата-центров, тогда как с IPv6 того же
-сервера всё работает. Скрипт добавляет в серверный конфиг sing-box отдельный
-outbound, который соединяется с Google с исходным адресом вашего IPv6, и
-маршрутизирует на него Google-домены.
+Сервисы Anthropic (в том числе Claude и Claude API) могут блокироваться, отвечать
+капчей или отказывать при выходе с IPv4 адресов дата-центров, тогда как с IPv6
+того же сервера всё работает. Скрипт добавляет в серверный конфиг sing-box отдельный
+outbound, который соединяется с Anthropic с исходным адресом вашего IPv6, и
+маршрутизирует на него домены Anthropic.
 
 Схема клиента не меняется (клиент → прокси → сервер), меняется только выход
-сервера для Google-доменов. **Клиентские конфиги ssb трогать не нужно.**
+сервера для доменов Anthropic. **Клиентские конфиги ssb трогать не нужно.**
 
 ## Соответствие Xray → sing-box
 
@@ -25,7 +25,7 @@ outbound, который соединяется с Google с исходным а
 | outbound `freedom` | outbound `direct` |
 | `sendThrough: <IPv6>` | `inet6_bind_address: <IPv6>` |
 | `settings.domainStrategy: "UseIPv6"` | `domain_resolver: { server, strategy: "ipv6_only" }` |
-| rule `geosite:google` | `rule_set: ["google"]` (geosite-google.srs) |
+| rule `geosite:anthropic` | `rule_set: ["anthropic"]` (geosite-anthropic.srs) |
 | rule `domain:claude.ai` + `domain:api.anthropic.com` | `domain: [...]` |
 
 ## Что делает скрипт
@@ -45,51 +45,37 @@ outbound, который соединяется с Google с исходным а
 2. **Делает бэкап** `/etc/sing-box/config.json` в `/root/bak-singbox/config.json.bak-<дата>`
    (хранит последние 10 копий).
 3. **Вносит три изменения в конфиг** (идемпотентно — повторный запуск не плодит дубликаты):
-   * rule-set `google` → `geosite-google.srs` (копирует из webroot ssb или докачивает с SagerNet);
+   * rule-set `anthropic` → `geosite-anthropic.srs` (копирует из webroot ssb или докачивает с SagerNet);
    * outbound `claude-v6`: `direct` + `inet6_bind_address` + `domain_resolver`
      со стратегией `ipv6_only` (аналог `UseIPv6`);
    * два routing-правила (перед остальными outbound-правилами):
-     * `rule_set: ["google"]` → `claude-v6`
-     * `domain: ["claude.ai", "api.anthropic.com"]` → `claude-v6`
+     * `rule_set: ["anthropic"]` → `claude-v6`
+     * `domain: ["claude.ai", "anthropic.com", "api.anthropic.com"]` → `claude-v6`
 4. **Проверяет конфиг** через `sing-box check` — при ошибке автоматически
    откатывает бэкап.
 5. **Перезагружает sing-box** (`systemctl reload`, fallback `systemctl restart`).
-6. **Прогоняет тесты связи с Claude по IPv6** (7 проверок, см. ниже) — чтобы
-   убедиться, что всё работает на 100%. Отдельный запуск без правок конфига:
-   `ssb-claude-v6-patch.sh test`.
+6. **Прогоняет тесты связи с Claude/Anthropic по IPv6** (7 проверок, см. ниже).
 
-## Что покрывается: Claude, AI Studio и другие сервисы Google
+## Что покрывается: Claude, Claude API и другие сервисы Anthropic
 
-Домены Google берутся **не вручную**, а из rule-set `google` (`geosite-google.srs`,
+Домены Anthropic берутся **не вручную**, а из rule-set `anthropic` (`geosite-anthropic.srs`,
 сборка [SagerNet/sing-geosite](https://github.com/SagerNet/sing-geosite) из
-[domain-list-community](https://github.com/v2fly/domain-list-community)) —
-категория `google` содержит суффиксы `google.com`, `googleapis.com`, `gstatic.com`,
-`googleusercontent.com` и сотни других, то есть покрывает **все поддомены**, включая AI Studio.
+[domain-list-community](https://github.com/v2fly/domain-list-community)) — категория
+`anthropic` содержит домены `anthropic.com`, `claude.ai`, `claude.com`, `clau.de`,
+`claude.dev`, `anthropic.team` и другие, то есть покрывает **все поддомены**,
+включая Claude и Claude API.
 
 | Сервис / домен | Как покрывается |
 |---|---|
-| `aistudio.google.com` (Google AI Studio) | суффикс `google.com` в rule-set `google` |
-| `makersuite.google.com` (старый URL AI Studio) | суффикс `google.com` |
-| `claude.ai`, `deepmind.google` | суффикс `google.com` |
-| `accounts.google.com` (логин Google) | суффикс `google.com` |
-| `alkalimakersuite-pa.googleapis.com` (API-бэкенд AI Studio) | суффикс `googleapis.com` |
-| `api.anthropic.com` (Claude API) | суффикс `googleapis.com` + явное правило патча |
-| `gstatic.com`, `googleusercontent.com` (ресурсы UI) | свои суффиксы в rule-set `google` |
+| `claude.ai` (Claude web) | суффикс в rule-set `anthropic` + явное правило патча |
+| `api.anthropic.com` (Claude API) | суффикс `anthropic.com` + явное правило патча |
+| `anthropic.com` | суффикс в rule-set `anthropic` + явное правило патча |
+| `claude.com`, `clau.de`, `claude.dev` | суффиксы в rule-set `anthropic` |
+| `claudeusercontent.com` (ресурсы UI) | свой суффикс в rule-set `anthropic` |
 
-Проверено на живом сервере (реальный прогон):
-
-```text
-https://aistudio.google.com/        -> HTTP 302 (reachable via IPv6)
-https://aistudio.google.com/app     -> HTTP 302 (reachable via IPv6)
-aistudio.google.com через outbound claude-v6 -> {"delay": 231} ms
-claude.ai  через outbound claude-v6 -> {"delay": 49} ms
-```
-
-То есть весь стек AI Studio — веб-интерфейс, API-бэкенд, логин и статика —
-уходит через глобальный IPv6 без дополнительных правок. **Важно:** правило
-работает для трафика, который приходит на сервер через прокси-клиент ssb;
-в клиентских конфигах Google должен быть направлен в прокси (в ssb это
-правило `rule_set: google` уже есть — как и в этом патче).
+**Важно:** правило работает для трафика, который приходит на сервер через
+прокси-клиент ssb; в клиентских конфигах Anthropic должен быть направлен в прокси
+(в ssb это правило `rule_set: anthropic` уже есть — как и в этом патче).
 
 ## Требования
 
@@ -119,79 +105,28 @@ ssb-claude-v6-patch.sh test     # проверить связь с Claude по I
 ### Как указать IPv6
 
 ```bash
-ssb-claude-v6-patch.sh apply 2001:db8:1::10      # аргументом (самый простой способ)
-CLAUDE_IPV6=2001:db8:1::10 ssb-claude-v6-patch.sh apply
+ssb-claude-v6-patch.sh apply 2001:db8::1      # аргументом (самый простой способ)
+CLAUDE_IPV6=2001:db8::1 ssb-claude-v6-patch.sh apply
 ssb-claude-v6-patch.sh apply                     # интерактивный запрос адреса
 ```
 
-Интерактивный запрос (когда `apply` запущен из терминала):
+### Тесты связи с Claude/Anthropic по IPv6
 
-```text
-Global IPv6 addresses found on this server:
-  1) 2001:db8:1::10   <- auto-detected
-  2) 2001:db8:2::20
-Enter the IPv6 of this server (number or full address) [default: 2001:db8:1::10]: 2
-[claude-v6-patch] IPv6 (manual input): 2001:db8:2::20
-```
+`ssb-claude-v6-patch.sh test` (и автоматически в конце `apply`) прогоняет 7 проверок:
 
-В поле можно ввести **номер** адреса из списка или **полный адрес** (например
-`2001:db8:2::20` или `2001:db8:2::20/64`). Enter берёт значение по умолчанию
-(автоопределённый адрес). Невалидный ввод (например, `fe80::…` или ULA `fd00::…`)
-отклоняется, и запрос повторяется.
-
-### Тесты связи с Claude по IPv6
-
-`ssb-claude-v6-patch.sh test` (и автоматически в конце `apply`) прогоняет 7 проверок —
-они показывают, что Claude доступен именно через ваш IPv6, «на 100%»:
-
-1. IPv6 назначен на интерфейсе сервера (иначе `inet6_bind_address` не сможет bind);
+1. IPv6 назначен на интерфейсе сервера;
 2. у `claude.ai` есть AAAA-запись (в `domain_resolver` стоит `ipv6_only`);
-3. `https://claude.ai/generate_204` через IPv6 → **HTTP 204**;
-4. `https://www.google.com/generate_204` через IPv6 → **HTTP 204** (контрольная точка);
-5. `https://api.anthropic.com/` через IPv6 отвечает (2xx–4xx;
-   404 на корне — норма, важна сама доступность API Claude);
-6. исходящий адрес соединения равен вашему IPv6 (нет NAT/маскарада) —
-   проверяется по `api6.ipify.org` / `ifconfig.me`;
-7. **сквозной тест через сам outbound `claude-v6`** sing-box: запрос к
-   `claude.ai/generate_204` через Clash API (`experimental.clash_api`)
-   и замер задержки. Если `clash_api` в конфиге не включён — проверка
-   помечается `[SKIP]`.
+3. `https://claude.ai/` через IPv6 отвечает (2xx–4xx);
+4. `https://api.anthropic.com/v1/messages` через IPv6 отвечает (2xx–4xx);
+5. `https://anthropic.com/` через IPv6 отвечает (2xx–4xx);
+6. исходящий адрес соединения равен вашему IPv6 (нет NAT/маскарада);
+7. **сквозной тест** через сам outbound `claude-v6` sing-box (Clash API) —
+   если `clash_api` в конфиге не включён, проверка помечается `[SKIP]`.
 
-Пример вывода (реальный прогон):
-
-```text
-=== connectivity tests to Claude/Google (source IPv6: 2001:db8:1::10) ===
-  [OK]   IPv6 2001:db8:1::10 is assigned on this server
-  [OK]   DNS: claude.ai resolves to IPv6 (AAAA)
-  [OK]   claude.ai/generate_204 via IPv6 -> HTTP 204
-  [OK]   www.google.com/generate_204 via IPv6 -> HTTP 204
-  [OK]   api.anthropic.com via IPv6 -> HTTP 404 (reachable)
-  [OK]   outbound source address is 2001:db8:1::10 (no NAT)
-  [OK]   sing-box outbound claude-v6 -> claude.ai works (delay 55 ms)
---- tests: OK=7 FAIL=0 SKIP=0
-```
-
-* Итог `OK=7 FAIL=0` = всё работает; при любом `[FAIL]` скрипт завершается
-  с кодом 1 и пишет, какая именно проверка не прошла.
-* `test` сам берёт IPv6 из настроенного outbound `claude-v6` (правки конфига
-  не делает); можно передать адрес и вручную: `ssb-claude-v6-patch.sh test 2001:db8:1::10`.
-* Автотест в конце `apply` отключается переменной `CLAUDE_SKIP_TEST=1`
-  (например, в cron/ansible, где доступ в интернет ограничен).
+* Итог `OK=6/7 FAIL=0` = всё работает (SKIP допустим, если нет Clash API);
+* при любом `[FAIL]` скрипт завершается с кодом 1.
+* Автотест в конце `apply` отключается переменной `CLAUDE_SKIP_TEST=1`.
 * Таймаут HTTP-проверок — `CLAUDE_TEST_TIMEOUT` (по умолчанию 15 секунд).
-
-Пример вывода `apply` (адреса условные):
-
-```text
-[claude-v6-patch] IPv6 (manual input): 2001:db8:1::10
-[claude-v6-patch] backup: /root/bak-singbox/config.json.bak-20261018-120000
-rule_set added: google -> /var/www/<RULESET_DIR>/geosite-google.srs
-outbound added: claude-v6 inet6_bind_address=2001:db8:1::10 dns=dns-main
-rules added at 3 : [{"rule_set": ["google"], "outbound": "claude-v6"}, {"domain": ["claude.ai", "api.anthropic.com"], "outbound": "claude-v6"}]
-config written: /etc/sing-box/config.json
-[claude-v6-patch] sing-box check: OK
-[claude-v6-patch] service sing-box reloaded
-[claude-v6-patch] done: gemini traffic -> claude-v6 -> IPv6
-```
 
 ### Переменные окружения
 
@@ -201,8 +136,6 @@ config written: /etc/sing-box/config.json
 | `CLAUDE_CONFIG` | путь к конфигу sing-box | `/etc/sing-box/config.json` |
 | `CLAUDE_BACKUP_DIR` | каталог бэкапов | `/root/bak-singbox` |
 | `CLAUDE_SERVICE` | имя systemd-юнита | `sing-box` |
-
-Пример: `CLAUDE_IPV6=2001:db8:1::10 ssb-claude-v6-patch.sh apply`
 
 ## Итоговый фрагмент конфига
 
@@ -217,19 +150,18 @@ config written: /etc/sing-box/config.json
 ],
 "route": {
   "rules": [
-    { "rule_set": ["google"], "outbound": "claude-v6" },
-    { "domain": ["claude.ai", "api.anthropic.com"], "outbound": "claude-v6" }
+    { "rule_set": ["anthropic"], "outbound": "claude-v6" },
+    { "domain": ["claude.ai", "anthropic.com", "api.anthropic.com"], "outbound": "claude-v6" }
   ],
   "rule_set": [
-    { "tag": "google", "type": "local", "format": "binary",
-      "path": "/var/www/<RULESET_DIR>/geosite-google.srs" }
+    { "tag": "anthropic", "type": "local", "format": "binary",
+      "path": "/var/www/<RULESET_DIR>/geosite-anthropic.srs" }
   ]
 }
 ```
 
-Правила ставятся до остальных outbound-правил конфига ssb (например, до правила,
-отправляющего часть трафика в WARP), поэтому Claude-соединения гарантированно
-попадают в `claude-v6`.
+Правила ставятся до остальных outbound-правил конфига ssb, поэтому соединения
+к Anthropic гарантированно попадают в `claude-v6`.
 
 ## Проверка работы
 
@@ -240,19 +172,17 @@ INFO inbound/trojan[trojan-in]: [user] inbound connection to claude.ai:443
 INFO outbound/direct[claude-v6]: outbound connection to claude.ai:443
 ```
 
-Для не-Google доменов вместо `claude-v6` будет обычный `direct`.
+Для не-Anthropic доменов вместо `claude-v6` будет обычный `direct` (или `warp`).
 
-**2. Clash API** (включён в конфигах ssb по умолчанию):
+**2. Clash API** (если включён в конфиге):
 
 ```bash
 SECRET=$(jq -r '.experimental.clash_api.secret' /etc/sing-box/config.json)
 curl -s -H "Authorization: Bearer $SECRET" http://127.0.0.1:9090/proxies \
   | jq -r '.proxies | keys[]'
 curl -s -H "Authorization: Bearer $SECRET" \
-  "http://127.0.0.1:9090/proxies/claude-v6/delay?url=https://claude.ai/generate_204&timeout=8000"
+  "http://127.0.0.1:9090/proxies/claude-v6/delay?url=https://claude.ai/&timeout=8000"
 ```
-
-В первом ответе должен появиться `claude-v6`, во втором — `{"delay": ...}`.
 
 **3. Исходный адрес соединений:**
 
@@ -260,7 +190,7 @@ curl -s -H "Authorization: Bearer $SECRET" \
 ss -tnp | grep sing-box
 ```
 
-TCP-соединения к Google должны идти с локального адреса вашего глобального IPv6.
+TCP-соединения к Anthropic должны идти с локального адреса вашего глобального IPv6.
 
 ## Восстановление
 
@@ -286,24 +216,6 @@ systemctl reload sing-box
   аргументом/`CLAUDE_IPV6`). В режиме без терминала (cron) берётся адрес
   исходящего маршрута (`ip -6 route get`).
 * Скрипт идемпотентен: повторный `apply` сначала удаляет свои элементы
-  (outbound с тегом `claude-v6`, его правила, свой rule-set) и добавляет заново.
+  (outbound с тегом `claude-v6`, его правила) и добавляет заново.
 * Патч работает на стороне **сервера**: клиентские конфиги ssb уже отправляют
-  Google (`rule_set: google`) в прокси, а сервер выбирает для него IPv6-выход.
-
-## Что именно проверялось
-
-* `sing-box check` на sing-box 1.14.x (Ubuntu 24.04, bash 5.2);
-* сквозной тест через реальный trojan-inbound ssb: `claude.ai` →
-  outbound `claude-v6` (HTTP 204), контрольный домен → outbound `direct`;
-* исходный адрес TCP-соединений к Google равен глобальному IPv6 сервера;
-* идемпотентность повторного запуска (без дубликатов правил и outbounds);
-* ручной ввод IPv6: выбор номера из списка, ввод полного адреса и адреса с `/64`,
-  отклонение невалидного ввода (`fe80::…`, ULA) с повторным запросом,
-  режимы `apply <IPv6>` и `CLAUDE_IPV6=...`, а также `remove` → повторный `apply`;
-* режим `test` и автотест в конце `apply`: 7 проверок связи с Claude по IPv6
-  (назначение адреса, AAAA, `generate_204` → 204, доступность API Claude,
-  исходящий адрес без NAT, сквозной тест через outbound `claude-v6` с замером
-  задержки) — `OK=7 FAIL=0` на рабочем сервере;
-* Google AI Studio: `aistudio.google.com` доступен через глобальный IPv6
-  (HTTP 302) и проходит через outbound `claude-v6` (сквозной тест с замером
-  задержки) — домен покрывается rule-set `google` (geosite:google).
+  Anthropic (`rule_set: anthropic`) в прокси, а сервер выбирает для него IPv6-выход.
